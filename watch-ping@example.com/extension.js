@@ -34,75 +34,99 @@ export default class WatchPingExtension extends Extension {
         this._indicator = new WatchPingIndicator();
         Main.panel.addToStatusArea(this.uuid, this._indicator, 0, 'center');
 
-        this._pingSourceId = GLib.timeout_add_seconds(
-            GLib.PRIORITY_DEFAULT,
-            PING_INTERVAL_SECONDS,
-            () => {
-                this._pingOnce();
-                return GLib.SOURCE_CONTINUE;
-            }
-        );
-
-        this._pingInFlight = false;
-        this._pingCancellable = null;
-        this._pingOnce();
+        this._pingProcess = null;
+        this._pingStdoutStream = null;
+        this._pingCancellable = new Gio.Cancellable();
+        this._startPingProcess();
     }
 
     disable() {
-        if (this._pingSourceId) {
-            GLib.source_remove(this._pingSourceId);
-            this._pingSourceId = 0;
-        }
-
-        this._pingCancellable?.cancel();
-        this._pingCancellable = null;
-        this._pingInFlight = false;
+        this._stopPingProcess();
 
         this._indicator?.destroy();
         this._indicator = null;
     }
 
-    _pingOnce() {
-        if (!this._indicator || this._pingInFlight)
+    _startPingProcess() {
+        if (!this._indicator)
             return;
 
-        this._pingInFlight = true;
-        this._pingCancellable = new Gio.Cancellable();
-
-        let process;
         try {
-            process = Gio.Subprocess.new(
-                ['ping', '-n', '-c', '1', '-W', '2', PING_HOST],
+            this._pingProcess = Gio.Subprocess.new(
+                ['ping', '-n', '-i', `${PING_INTERVAL_SECONDS}`, '-W', '2', PING_HOST],
                 Gio.SubprocessFlags.STDOUT_PIPE |
-                Gio.SubprocessFlags.STDERR_PIPE |
                 Gio.SubprocessFlags.SEARCH_PATH
             );
         } catch (error) {
-            this._pingInFlight = false;
-            this._pingCancellable = null;
+            this._pingProcess = null;
             logError(error, 'Failed to start ping process');
+            this._indicator.setText('ping err');
             return;
         }
 
-        process.communicate_utf8_async(
-            null,
+        this._pingStdoutStream = new Gio.DataInputStream({
+            base_stream: this._pingProcess.get_stdout_pipe(),
+            close_base_stream: true,
+        });
+
+        this._readNextPingLine();
+
+        this._pingProcess.wait_check_async(
             this._pingCancellable,
             (subprocess, result) => {
                 try {
-                    const [, stdout] = subprocess.communicate_utf8_finish(result);
-                    const latencyMs = this._extractLatency(stdout);
-                    if (latencyMs !== null && this._indicator)
-                        this._indicator.setText(`${latencyMs} ms`);
+                    subprocess.wait_check_finish(result);
                 } catch (error) {
                     if (!(error instanceof GLib.Error) ||
                         !error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
-                        logError(error, 'Ping request failed');
-                } finally {
-                    this._pingInFlight = false;
-                    this._pingCancellable = null;
+                        logError(error, 'Ping process exited unexpectedly');
                 }
             }
         );
+    }
+
+    _readNextPingLine() {
+        if (!this._pingStdoutStream || !this._indicator)
+            return;
+
+        this._pingStdoutStream.read_line_async(
+            GLib.PRIORITY_DEFAULT,
+            this._pingCancellable,
+            (stream, result) => {
+                try {
+                    const [line] = stream.read_line_finish_utf8(result);
+                    if (line === null)
+                        return;
+
+                    const latencyMs = this._extractLatency(line);
+                    if (latencyMs !== null && this._indicator)
+                        this._indicator.setText(`${latencyMs} ms`);
+
+                    this._readNextPingLine();
+                } catch (error) {
+                    if (!(error instanceof GLib.Error) ||
+                        !error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                        logError(error, 'Failed to read ping output');
+                }
+            }
+        );
+    }
+
+    _stopPingProcess() {
+        this._pingCancellable?.cancel();
+        this._pingCancellable = null;
+
+        try {
+            this._pingStdoutStream?.close(null);
+        } catch (error) {
+            logError(error, 'Failed to close ping output stream');
+        }
+        this._pingStdoutStream = null;
+
+        if (this._pingProcess && !this._pingProcess.get_if_exited())
+            this._pingProcess.force_exit();
+
+        this._pingProcess = null;
     }
 
     _extractLatency(pingOutput) {

@@ -10,6 +10,8 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const SETTINGS_SCHEMA = 'org.gnome.shell.extensions.watch-ping';
 const DEFAULT_INTERVAL_SECONDS = 5;
+const NO_PONG_TEXT = '?';
+const PING_ERROR_TEXT = 'ping err';
 
 const WatchPingIndicator = GObject.registerClass(
 class WatchPingIndicator extends PanelMenu.Button {
@@ -29,45 +31,71 @@ class WatchPingIndicator extends PanelMenu.Button {
     }
 });
 
-export default class WatchPingExtension extends Extension {
-    enable() {
-        this._indicator = new WatchPingIndicator();
-        Main.panel.addToStatusArea(this.uuid, this._indicator, 0, 'center');
-
-        this._settings = this.getSettings(SETTINGS_SCHEMA);
-        this._settingsChangedIds = [
-            this._settings.connect('changed::host', () => this._restartPingProcess()),
-            this._settings.connect('changed::interval-seconds', () => this._restartPingProcess()),
-        ];
-
-        this._pingSession = null;
-        this._noPongWatchdogId = 0;
+class PingWatchdog {
+    constructor(getIntervalSeconds, onTimeout) {
+        this._getIntervalSeconds = getIntervalSeconds;
+        this._onTimeout = onTimeout;
+        this._sourceId = 0;
         this._lastPongMonotonicUs = 0;
+    }
+
+    start() {
+        this._lastPongMonotonicUs = GLib.get_monotonic_time();
+        this.stop();
+        this._sourceId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            1,
+            () => {
+                const intervalUs = this._getIntervalSeconds() * 1000000;
+                const elapsedUs = GLib.get_monotonic_time() - this._lastPongMonotonicUs;
+                if (elapsedUs >= intervalUs)
+                    this._onTimeout();
+                return GLib.SOURCE_CONTINUE;
+            }
+        );
+    }
+
+    markPong() {
+        this._lastPongMonotonicUs = GLib.get_monotonic_time();
+    }
+
+    stop() {
+        if (this._sourceId) {
+            GLib.source_remove(this._sourceId);
+            this._sourceId = 0;
+        }
+    }
+}
+
+class PingMonitor {
+    constructor(settings, onTextUpdate) {
+        this._settings = settings;
+        this._onTextUpdate = onTextUpdate;
+        this._pingSession = null;
+        this._watchdog = new PingWatchdog(
+            () => this._getIntervalSeconds(),
+            () => this._onTextUpdate(NO_PONG_TEXT)
+        );
+    }
+
+    start() {
         this._startPingProcess();
     }
 
-    disable() {
+    restart() {
         this._stopPingProcess();
+        this._startPingProcess();
+    }
 
-        if (this._settings) {
-            for (const id of (this._settingsChangedIds ?? []))
-                this._settings.disconnect(id);
-        }
-        this._settingsChangedIds = [];
-        this._settings = null;
-
-        this._indicator?.destroy();
-        this._indicator = null;
+    stop() {
+        this._stopPingProcess();
     }
 
     _startPingProcess() {
-        if (!this._indicator)
-            return;
-
         const host = this._getHost();
         const intervalSeconds = this._getIntervalSeconds();
         if (!this._isValidIpAddress(host)) {
-            this._indicator.setText('?');
+            this._onTextUpdate(NO_PONG_TEXT);
             return;
         }
 
@@ -82,7 +110,7 @@ export default class WatchPingExtension extends Extension {
             );
         } catch (error) {
             logError(error, 'Failed to start ping process');
-            this._indicator.setText('ping err');
+            this._onTextUpdate(PING_ERROR_TEXT);
             return;
         }
 
@@ -96,8 +124,7 @@ export default class WatchPingExtension extends Extension {
         };
 
         this._pingSession = session;
-        this._lastPongMonotonicUs = GLib.get_monotonic_time();
-        this._startNoPongWatchdog();
+        this._watchdog.start();
 
         this._readNextPingLine(session);
 
@@ -118,7 +145,7 @@ export default class WatchPingExtension extends Extension {
     }
 
     _readNextPingLine(session) {
-        if (this._pingSession !== session || !this._indicator)
+        if (this._pingSession !== session)
             return;
 
         session.stdoutStream.read_line_async(
@@ -134,9 +161,9 @@ export default class WatchPingExtension extends Extension {
                         return;
 
                     const latencyMs = this._extractLatency(line);
-                    if (latencyMs !== null && this._indicator) {
-                        this._lastPongMonotonicUs = GLib.get_monotonic_time();
-                        this._indicator.setText(`${latencyMs} ms`);
+                    if (latencyMs !== null) {
+                        this._watchdog.markPong();
+                        this._onTextUpdate(`${latencyMs} ms`);
                     }
 
                     this._readNextPingLine(session);
@@ -148,16 +175,8 @@ export default class WatchPingExtension extends Extension {
         );
     }
 
-    _restartPingProcess() {
-        this._stopPingProcess();
-        this._startPingProcess();
-    }
-
     _stopPingProcess() {
-        if (this._noPongWatchdogId) {
-            GLib.source_remove(this._noPongWatchdogId);
-            this._noPongWatchdogId = 0;
-        }
+        this._watchdog.stop();
 
         const session = this._pingSession;
         this._pingSession = null;
@@ -172,29 +191,6 @@ export default class WatchPingExtension extends Extension {
         } catch (error) {
             logError(error, 'Failed to stop ping process');
         }
-    }
-
-    _startNoPongWatchdog() {
-        if (this._noPongWatchdogId) {
-            GLib.source_remove(this._noPongWatchdogId);
-            this._noPongWatchdogId = 0;
-        }
-
-        this._noPongWatchdogId = GLib.timeout_add_seconds(
-            GLib.PRIORITY_DEFAULT,
-            1,
-            () => {
-                if (!this._indicator || !this._pingSession)
-                    return GLib.SOURCE_REMOVE;
-
-                const intervalUs = this._getIntervalSeconds() * 1000000;
-                const elapsedUs = GLib.get_monotonic_time() - this._lastPongMonotonicUs;
-                if (elapsedUs >= intervalUs)
-                    this._indicator.setText('?');
-
-                return GLib.SOURCE_CONTINUE;
-            }
-        );
     }
 
     _isCancelledError(error) {
@@ -222,5 +218,35 @@ export default class WatchPingExtension extends Extension {
             return null;
 
         return match[1];
+    }
+}
+
+export default class WatchPingExtension extends Extension {
+    enable() {
+        this._indicator = new WatchPingIndicator();
+        Main.panel.addToStatusArea(this.uuid, this._indicator, 0, 'center');
+
+        this._settings = this.getSettings(SETTINGS_SCHEMA);
+        this._monitor = new PingMonitor(this._settings, text => this._indicator?.setText(text));
+        this._settingsChangedIds = [
+            this._settings.connect('changed::host', () => this._monitor.restart()),
+            this._settings.connect('changed::interval-seconds', () => this._monitor.restart()),
+        ];
+        this._monitor.start();
+    }
+
+    disable() {
+        this._monitor?.stop();
+        this._monitor = null;
+
+        if (this._settings) {
+            for (const id of (this._settingsChangedIds ?? []))
+                this._settings.disconnect(id);
+        }
+        this._settingsChangedIds = [];
+        this._settings = null;
+
+        this._indicator?.destroy();
+        this._indicator = null;
     }
 }

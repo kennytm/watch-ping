@@ -66,10 +66,17 @@ class WatchPingIndicator extends PanelMenu.Button {
         cr.lineTo(width, height - 0.5);
         cr.stroke();
 
-        if (this._sparklineReadingsMs.length === 0)
+        const slots = new Array(MAX_SPARKLINE_RECORDS).fill(null);
+        const recentReadings = this._sparklineReadingsMs.slice(-MAX_SPARKLINE_RECORDS);
+        const startIndex = MAX_SPARKLINE_RECORDS - recentReadings.length;
+        for (let i = 0; i < recentReadings.length; i++)
+            slots[startIndex + i] = recentReadings[i];
+
+        const validReadings = slots.filter(value => value !== null);
+        if (validReadings.length === 0)
             return;
 
-        const maxRecentMs = Math.max(...this._sparklineReadingsMs);
+        const maxRecentMs = Math.max(...validReadings);
         const yMaxMs = Math.min(
             Math.max(1000, maxRecentMs),
             this._sparklineIntervalSeconds * 1000
@@ -81,26 +88,38 @@ class WatchPingIndicator extends PanelMenu.Button {
         cr.setSourceRGBA(0.35, 0.9, 0.55, 0.95);
         cr.setLineWidth(1.5);
 
-        if (this._sparklineReadingsMs.length === 1) {
-            const clampedMs = Math.min(this._sparklineReadingsMs[0], yMaxMs);
-            const y = (height - 1) - (clampedMs / yMaxMs) * (height - 1);
-            cr.arc(width - 2, y, 1.5, 0, 2 * Math.PI);
-            cr.fill();
-            return;
-        }
+        let previousValid = false;
+        for (let i = 0; i < slots.length; i++) {
+            const valueMs = slots[i];
+            const x = i * (width - 1) / (MAX_SPARKLINE_RECORDS - 1);
 
-        for (let i = 0; i < this._sparklineReadingsMs.length; i++) {
-            const x = i * (width - 1) / (this._sparklineReadingsMs.length - 1);
-            const clampedMs = Math.min(this._sparklineReadingsMs[i], yMaxMs);
-            const y = (height - 1) - (clampedMs / yMaxMs) * (height - 1);
+            if (valueMs === null) {
+                previousValid = false;
+                continue;
+            }
 
-            if (i === 0)
-                cr.moveTo(x, y);
-            else
+            const clampedMs = Math.min(valueMs, yMaxMs);
+            const y = (height - 1) - (clampedMs / yMaxMs) * (height - 1);
+            if (previousValid)
                 cr.lineTo(x, y);
+            else
+                cr.moveTo(x, y);
+
+            previousValid = true;
         }
 
         cr.stroke();
+
+        if (validReadings.length === 1) {
+            const pointIndex = slots.findIndex(value => value !== null);
+            const valueMs = slots[pointIndex];
+            const x = pointIndex * (width - 1) / (MAX_SPARKLINE_RECORDS - 1);
+            const clampedMs = Math.min(valueMs, yMaxMs);
+            const y = (height - 1) - (clampedMs / yMaxMs) * (height - 1);
+
+            cr.arc(x, y, 1.5, 0, 2 * Math.PI);
+            cr.fill();
+        }
     }
 });
 

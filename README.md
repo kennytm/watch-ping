@@ -1,12 +1,12 @@
 # watch-ping
 
-Sample GNOME Shell extension project.
+GNOME Shell extension that displays network latency in the top bar.
 
 ## Extension
 
 Path: `watch-ping@example.com`
 
-This extension adds `Hello world` to the GNOME top bar.
+This extension pings `1.1.1.1` every 5 seconds and updates the label with the latest response time in milliseconds.
 
 ## Local install (for testing)
 
@@ -27,5 +27,5 @@ gnome-extensions install ./dist/watch-ping@example.com.v1.shell-extension.zip
 
 ```bash
 gnome-extensions install --force ./dist/watch-ping@example.com.v1.shell-extension.zip
-dbus-run-session gnome-shell --devkit --wayland
+./scripts/test-extension.sh
 ```

@@ -41,8 +41,7 @@ export default class WatchPingExtension extends Extension {
             this._settings.connect('changed::interval-seconds', () => this._restartPingProcess()),
         ];
 
-        this._pingProcess = null;
-        this._pingStdoutStream = null;
+        this._pingSession = null;
         this._startPingProcess();
     }
 
@@ -67,50 +66,61 @@ export default class WatchPingExtension extends Extension {
         const host = this._getHost();
         const intervalSeconds = this._getIntervalSeconds();
 
-        this._pingCancellable = new Gio.Cancellable();
+        const cancellable = new Gio.Cancellable();
+        let process;
 
         try {
-            this._pingProcess = Gio.Subprocess.new(
+            process = Gio.Subprocess.new(
                 ['ping', '-n', '-i', `${intervalSeconds}`, '-W', '2', host],
                 Gio.SubprocessFlags.STDOUT_PIPE |
                 Gio.SubprocessFlags.SEARCH_PATH
             );
         } catch (error) {
-            this._pingProcess = null;
             logError(error, 'Failed to start ping process');
             this._indicator.setText('ping err');
             return;
         }
 
-        this._pingStdoutStream = new Gio.DataInputStream({
-            base_stream: this._pingProcess.get_stdout_pipe(),
-            close_base_stream: true,
-        });
+        const session = {
+            cancellable,
+            process,
+            stdoutStream: new Gio.DataInputStream({
+                base_stream: process.get_stdout_pipe(),
+                close_base_stream: true,
+            }),
+        };
 
-        this._readNextPingLine();
+        this._pingSession = session;
 
-        this._pingProcess.wait_check_async(
-            this._pingCancellable,
+        this._readNextPingLine(session);
+
+        process.wait_check_async(
+            cancellable,
             (subprocess, result) => {
+                if (this._pingSession !== session)
+                    return;
+
                 try {
                     subprocess.wait_check_finish(result);
                 } catch (error) {
-                    if (!(error instanceof GLib.Error) ||
-                        !error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                    if (!this._isCancelledError(error))
                         logError(error, 'Ping process exited unexpectedly');
                 }
             }
         );
     }
 
-    _readNextPingLine() {
-        if (!this._pingStdoutStream || !this._indicator)
+    _readNextPingLine(session) {
+        if (this._pingSession !== session || !this._indicator)
             return;
 
-        this._pingStdoutStream.read_line_async(
+        session.stdoutStream.read_line_async(
             GLib.PRIORITY_DEFAULT,
-            this._pingCancellable,
+            session.cancellable,
             (stream, result) => {
+                if (this._pingSession !== session)
+                    return;
+
                 try {
                     const [line] = stream.read_line_finish_utf8(result);
                     if (line === null)
@@ -120,10 +130,9 @@ export default class WatchPingExtension extends Extension {
                     if (latencyMs !== null && this._indicator)
                         this._indicator.setText(`${latencyMs} ms`);
 
-                    this._readNextPingLine();
+                    this._readNextPingLine(session);
                 } catch (error) {
-                    if (!(error instanceof GLib.Error) ||
-                        !error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                    if (!this._isCancelledError(error))
                         logError(error, 'Failed to read ping output');
                 }
             }
@@ -136,20 +145,24 @@ export default class WatchPingExtension extends Extension {
     }
 
     _stopPingProcess() {
-        this._pingCancellable?.cancel();
-        this._pingCancellable = null;
+        const session = this._pingSession;
+        this._pingSession = null;
+
+        if (!session)
+            return;
+
+        session.cancellable.cancel();
 
         try {
-            this._pingStdoutStream?.close(null);
+            session.process.force_exit();
         } catch (error) {
-            logError(error, 'Failed to close ping output stream');
+            logError(error, 'Failed to stop ping process');
         }
-        this._pingStdoutStream = null;
+    }
 
-        if (this._pingProcess && !this._pingProcess.get_if_exited())
-            this._pingProcess.force_exit();
-
-        this._pingProcess = null;
+    _isCancelledError(error) {
+        return error instanceof GLib.Error &&
+            error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED);
     }
 
     _getHost() {

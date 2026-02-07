@@ -42,6 +42,8 @@ export default class WatchPingExtension extends Extension {
         ];
 
         this._pingSession = null;
+        this._noPongWatchdogId = 0;
+        this._lastPongMonotonicUs = 0;
         this._startPingProcess();
     }
 
@@ -91,6 +93,8 @@ export default class WatchPingExtension extends Extension {
         };
 
         this._pingSession = session;
+        this._lastPongMonotonicUs = GLib.get_monotonic_time();
+        this._startNoPongWatchdog();
 
         this._readNextPingLine(session);
 
@@ -127,8 +131,10 @@ export default class WatchPingExtension extends Extension {
                         return;
 
                     const latencyMs = this._extractLatency(line);
-                    if (latencyMs !== null && this._indicator)
+                    if (latencyMs !== null && this._indicator) {
+                        this._lastPongMonotonicUs = GLib.get_monotonic_time();
                         this._indicator.setText(`${latencyMs} ms`);
+                    }
 
                     this._readNextPingLine(session);
                 } catch (error) {
@@ -145,6 +151,11 @@ export default class WatchPingExtension extends Extension {
     }
 
     _stopPingProcess() {
+        if (this._noPongWatchdogId) {
+            GLib.source_remove(this._noPongWatchdogId);
+            this._noPongWatchdogId = 0;
+        }
+
         const session = this._pingSession;
         this._pingSession = null;
 
@@ -158,6 +169,29 @@ export default class WatchPingExtension extends Extension {
         } catch (error) {
             logError(error, 'Failed to stop ping process');
         }
+    }
+
+    _startNoPongWatchdog() {
+        if (this._noPongWatchdogId) {
+            GLib.source_remove(this._noPongWatchdogId);
+            this._noPongWatchdogId = 0;
+        }
+
+        this._noPongWatchdogId = GLib.timeout_add_seconds(
+            GLib.PRIORITY_DEFAULT,
+            1,
+            () => {
+                if (!this._indicator || !this._pingSession)
+                    return GLib.SOURCE_REMOVE;
+
+                const intervalUs = this._getIntervalSeconds() * 1000000;
+                const elapsedUs = GLib.get_monotonic_time() - this._lastPongMonotonicUs;
+                if (elapsedUs >= intervalUs)
+                    this._indicator.setText('?');
+
+                return GLib.SOURCE_CONTINUE;
+            }
+        );
     }
 
     _isCancelledError(error) {

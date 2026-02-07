@@ -3,6 +3,7 @@ import St from 'gi://St';
 import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
+import Cairo from 'cairo';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
@@ -12,22 +13,94 @@ const SETTINGS_SCHEMA = 'org.gnome.shell.extensions.watch-ping';
 const DEFAULT_INTERVAL_SECONDS = 5;
 const NO_PONG_TEXT = '?';
 const PING_ERROR_TEXT = 'ping err';
+const MAX_SPARKLINE_RECORDS = 20;
+const SPARKLINE_WIDTH = 56;
+const SPARKLINE_HEIGHT = 16;
 
 const WatchPingIndicator = GObject.registerClass(
 class WatchPingIndicator extends PanelMenu.Button {
     _init() {
         super._init(0.0, 'WatchPingIndicator');
 
+        this._sparklineReadingsMs = [];
+        this._sparklineIntervalSeconds = DEFAULT_INTERVAL_SECONDS;
+
+        this._container = new St.BoxLayout();
+        this._sparkline = new St.DrawingArea({
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._sparkline.set_width(SPARKLINE_WIDTH);
+        this._sparkline.set_height(SPARKLINE_HEIGHT);
+        this._sparkline.connect('repaint', area => this._onSparklineRepaint(area));
+
         this._label = new St.Label({
             text: 'ping...',
             y_align: Clutter.ActorAlign.CENTER,
         });
 
-        this.add_child(this._label);
+        this._container.add_child(this._sparkline);
+        this._container.add_child(this._label);
+        this.add_child(this._container);
     }
 
     setText(text) {
         this._label.text = text;
+    }
+
+    setSparkline(readingsMs, intervalSeconds) {
+        this._sparklineReadingsMs = readingsMs.slice(-MAX_SPARKLINE_RECORDS);
+        this._sparklineIntervalSeconds = Math.max(1, intervalSeconds);
+        this._sparkline.queue_repaint();
+    }
+
+    _onSparklineRepaint(area) {
+        const cr = area.get_context();
+        const [width, height] = area.get_surface_size();
+
+        if (width <= 1 || height <= 1)
+            return;
+
+        cr.setSourceRGBA(1, 1, 1, 0.25);
+        cr.setLineWidth(1);
+        cr.moveTo(0, height - 0.5);
+        cr.lineTo(width, height - 0.5);
+        cr.stroke();
+
+        if (this._sparklineReadingsMs.length === 0)
+            return;
+
+        const maxRecentMs = Math.max(...this._sparklineReadingsMs);
+        const yMaxMs = Math.min(
+            Math.max(1000, maxRecentMs),
+            this._sparklineIntervalSeconds * 1000
+        );
+        if (yMaxMs <= 0)
+            return;
+
+        cr.setAntialias(Cairo.Antialias.BEST);
+        cr.setSourceRGBA(0.35, 0.9, 0.55, 0.95);
+        cr.setLineWidth(1.5);
+
+        if (this._sparklineReadingsMs.length === 1) {
+            const clampedMs = Math.min(this._sparklineReadingsMs[0], yMaxMs);
+            const y = (height - 1) - (clampedMs / yMaxMs) * (height - 1);
+            cr.arc(width - 2, y, 1.5, 0, 2 * Math.PI);
+            cr.fill();
+            return;
+        }
+
+        for (let i = 0; i < this._sparklineReadingsMs.length; i++) {
+            const x = i * (width - 1) / (this._sparklineReadingsMs.length - 1);
+            const clampedMs = Math.min(this._sparklineReadingsMs[i], yMaxMs);
+            const y = (height - 1) - (clampedMs / yMaxMs) * (height - 1);
+
+            if (i === 0)
+                cr.moveTo(x, y);
+            else
+                cr.lineTo(x, y);
+        }
+
+        cr.stroke();
     }
 });
 
@@ -68,10 +141,13 @@ class PingWatchdog {
 }
 
 class PingMonitor {
-    constructor(settings, onTextUpdate) {
+    constructor(settings, callbacks = {}) {
         this._settings = settings;
-        this._onTextUpdate = onTextUpdate;
+        this._onTextUpdate = callbacks.onTextUpdate ?? (() => {});
+        this._onLatency = callbacks.onLatency ?? (() => {});
+        this._onHostActivated = callbacks.onHostActivated ?? (() => {});
         this._pingSession = null;
+        this._activeHost = null;
         this._watchdog = new PingWatchdog(
             () => this._getIntervalSeconds(),
             () => this._onTextUpdate(NO_PONG_TEXT)
@@ -123,7 +199,11 @@ class PingMonitor {
             }),
         };
 
+        const hostChanged = host !== this._activeHost;
+        this._activeHost = host;
         this._pingSession = session;
+        if (hostChanged)
+            this._onHostActivated(host);
         this._watchdog.start();
 
         this._readNextPingLine(session);
@@ -160,10 +240,11 @@ class PingMonitor {
                     if (line === null)
                         return;
 
-                    const latencyMs = this._extractLatency(line);
-                    if (latencyMs !== null) {
+                    const latency = this._extractLatency(line);
+                    if (latency !== null) {
                         this._watchdog.markPong();
-                        this._onTextUpdate(`${latencyMs} ms`);
+                        this._onLatency(latency.valueMs);
+                        this._onTextUpdate(`${latency.textMs} ms`);
                     }
 
                     this._readNextPingLine(session);
@@ -217,7 +298,14 @@ class PingMonitor {
         if (!match)
             return null;
 
-        return match[1];
+        const valueMs = Number.parseFloat(match[1]);
+        if (!Number.isFinite(valueMs))
+            return null;
+
+        return {
+            valueMs,
+            textMs: match[1],
+        };
     }
 }
 
@@ -227,11 +315,17 @@ export default class WatchPingExtension extends Extension {
         Main.panel.addToStatusArea(this.uuid, this._indicator, 0, 'center');
 
         this._settings = this.getSettings(SETTINGS_SCHEMA);
-        this._monitor = new PingMonitor(this._settings, text => this._indicator?.setText(text));
+        this._recentLatenciesMs = [];
+        this._monitor = new PingMonitor(this._settings, {
+            onTextUpdate: text => this._indicator?.setText(text),
+            onLatency: latencyMs => this._recordLatency(latencyMs),
+            onHostActivated: () => this._clearSparkline(),
+        });
         this._settingsChangedIds = [
-            this._settings.connect('changed::host', () => this._monitor.restart()),
-            this._settings.connect('changed::interval-seconds', () => this._monitor.restart()),
+            this._settings.connect('changed::host', () => this._handleHostChanged()),
+            this._settings.connect('changed::interval-seconds', () => this._handleIntervalChanged()),
         ];
+        this._refreshSparkline();
         this._monitor.start();
     }
 
@@ -245,8 +339,39 @@ export default class WatchPingExtension extends Extension {
         }
         this._settingsChangedIds = [];
         this._settings = null;
+        this._recentLatenciesMs = [];
 
         this._indicator?.destroy();
         this._indicator = null;
+    }
+
+    _handleHostChanged() {
+        this._monitor.restart();
+    }
+
+    _handleIntervalChanged() {
+        this._monitor.restart();
+        this._refreshSparkline();
+    }
+
+    _recordLatency(latencyMs) {
+        this._recentLatenciesMs.push(latencyMs);
+        if (this._recentLatenciesMs.length > MAX_SPARKLINE_RECORDS)
+            this._recentLatenciesMs.splice(0, this._recentLatenciesMs.length - MAX_SPARKLINE_RECORDS);
+        this._refreshSparkline();
+    }
+
+    _clearSparkline() {
+        this._recentLatenciesMs = [];
+        this._refreshSparkline();
+    }
+
+    _refreshSparkline() {
+        this._indicator?.setSparkline(this._recentLatenciesMs, this._getIntervalSeconds());
+    }
+
+    _getIntervalSeconds() {
+        const intervalSeconds = this._settings?.get_int('interval-seconds') ?? DEFAULT_INTERVAL_SECONDS;
+        return Math.max(1, intervalSeconds);
     }
 }

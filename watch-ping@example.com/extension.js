@@ -1,5 +1,6 @@
 import GObject from 'gi://GObject';
 import St from 'gi://St';
+import Clutter from 'gi://Clutter';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
@@ -12,7 +13,7 @@ class WatchPingIndicator extends PanelMenu.Button {
 
         this._label = new St.Label({
             text: 'Hello world',
-            y_align: St.Align.MIDDLE,
+            y_align: Clutter.ActorAlign.CENTER,
         });
 
         this.add_child(this._label);

@@ -15,3 +15,10 @@ mkdir -p ~/.local/share/gnome-shell/extensions
 cp -r watch-ping@example.com ~/.local/share/gnome-shell/extensions/
 # Restart GNOME Shell session or log out/in, then enable the extension.
 ```
+
+## Build installable bundle
+
+```bash
+./scripts/build-extension.sh
+gnome-extensions install ./dist/watch-ping@example.com.v1.shell-extension.zip
+```

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.watch-ping" path="/org/gnome/shell/extensions/watch-ping/">
+    <key name="host" type="s">
+      <default>'1.1.1.1'</default>
+      <summary>Ping host</summary>
+      <description>Host to ping periodically.</description>
+    </key>
+    <key name="interval-seconds" type="i">
+      <default>5</default>
+      <range min="1" max="3600"/>
+      <summary>Ping interval seconds</summary>
+      <description>Number of seconds between ICMP ping requests.</description>
+    </key>
+  </schema>
+</schemalist>

@@ -3,5 +3,6 @@
   "name": "Watch Ping",
   "description": "Pings 1.1.1.1 every 5s and shows latency in the top bar",
   "version": 1,
+  "settings-schema": "org.gnome.shell.extensions.watch-ping",
   "shell-version": ["45", "46", "47", "48", "49"]
 }

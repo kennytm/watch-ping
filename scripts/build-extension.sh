@@ -41,6 +41,14 @@ trap cleanup EXIT
 
 cp -R "$EXT_DIR"/. "$TMP_DIR"/
 
+if [[ -d "$TMP_DIR/schemas" ]] && compgen -G "$TMP_DIR/schemas/*.gschema.xml" >/dev/null; then
+    if ! command -v glib-compile-schemas >/dev/null 2>&1; then
+        echo "error: glib-compile-schemas is required to build extension schemas" >&2
+        exit 1
+    fi
+    glib-compile-schemas "$TMP_DIR/schemas"
+fi
+
 (
     cd "$TMP_DIR"
     zip -qr "$OUT_FILE" .

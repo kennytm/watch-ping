@@ -8,8 +8,9 @@ import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
-const PING_HOST = '1.1.1.1';
-const PING_INTERVAL_SECONDS = 5;
+const SETTINGS_SCHEMA = 'org.gnome.shell.extensions.watch-ping';
+const DEFAULT_HOST = '1.1.1.1';
+const DEFAULT_INTERVAL_SECONDS = 5;
 
 const WatchPingIndicator = GObject.registerClass(
 class WatchPingIndicator extends PanelMenu.Button {
@@ -34,14 +35,26 @@ export default class WatchPingExtension extends Extension {
         this._indicator = new WatchPingIndicator();
         Main.panel.addToStatusArea(this.uuid, this._indicator, 0, 'center');
 
+        this._settings = this.getSettings(SETTINGS_SCHEMA);
+        this._settingsChangedIds = [
+            this._settings.connect('changed::host', () => this._restartPingProcess()),
+            this._settings.connect('changed::interval-seconds', () => this._restartPingProcess()),
+        ];
+
         this._pingProcess = null;
         this._pingStdoutStream = null;
-        this._pingCancellable = new Gio.Cancellable();
         this._startPingProcess();
     }
 
     disable() {
         this._stopPingProcess();
+
+        if (this._settings) {
+            for (const id of (this._settingsChangedIds ?? []))
+                this._settings.disconnect(id);
+        }
+        this._settingsChangedIds = [];
+        this._settings = null;
 
         this._indicator?.destroy();
         this._indicator = null;
@@ -51,9 +64,14 @@ export default class WatchPingExtension extends Extension {
         if (!this._indicator)
             return;
 
+        const host = this._getHost();
+        const intervalSeconds = this._getIntervalSeconds();
+
+        this._pingCancellable = new Gio.Cancellable();
+
         try {
             this._pingProcess = Gio.Subprocess.new(
-                ['ping', '-n', '-i', `${PING_INTERVAL_SECONDS}`, '-W', '2', PING_HOST],
+                ['ping', '-n', '-i', `${intervalSeconds}`, '-W', '2', host],
                 Gio.SubprocessFlags.STDOUT_PIPE |
                 Gio.SubprocessFlags.SEARCH_PATH
             );
@@ -112,6 +130,11 @@ export default class WatchPingExtension extends Extension {
         );
     }
 
+    _restartPingProcess() {
+        this._stopPingProcess();
+        this._startPingProcess();
+    }
+
     _stopPingProcess() {
         this._pingCancellable?.cancel();
         this._pingCancellable = null;
@@ -127,6 +150,16 @@ export default class WatchPingExtension extends Extension {
             this._pingProcess.force_exit();
 
         this._pingProcess = null;
+    }
+
+    _getHost() {
+        const host = this._settings?.get_string('host') ?? '';
+        return host.trim() || DEFAULT_HOST;
+    }
+
+    _getIntervalSeconds() {
+        const intervalSeconds = this._settings?.get_int('interval-seconds') ?? DEFAULT_INTERVAL_SECONDS;
+        return Math.max(1, intervalSeconds);
     }
 
     _extractLatency(pingOutput) {

@@ -4,7 +4,6 @@ import Gtk from 'gi://Gtk';
 import {ExtensionPreferences, gettext as _} from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js';
 
 const SETTINGS_SCHEMA = 'org.gnome.shell.extensions.watch-ping';
-const DEFAULT_HOST = '1.1.1.1';
 const DEFAULT_INTERVAL_SECONDS = 5;
 const MIN_INTERVAL_SECONDS = 1;
 const MAX_INTERVAL_SECONDS = 3600;
@@ -21,14 +20,14 @@ export default class WatchPingPreferences extends ExtensionPreferences {
 
         const hostRow = new Adw.EntryRow({
             title: _('Ping Host'),
-            text: settings.get_string('host') || DEFAULT_HOST,
+            text: settings.get_string('host'),
         });
         hostRow.connect('notify::text', row => {
             const host = row.text.trim();
-            settings.set_string('host', host || DEFAULT_HOST);
+            settings.set_string('host', host);
         });
         settings.connect('changed::host', () => {
-            const host = settings.get_string('host') || DEFAULT_HOST;
+            const host = settings.get_string('host');
             if (hostRow.text !== host)
                 hostRow.text = host;
         });

@@ -9,7 +9,6 @@ import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
 const SETTINGS_SCHEMA = 'org.gnome.shell.extensions.watch-ping';
-const DEFAULT_HOST = '1.1.1.1';
 const DEFAULT_INTERVAL_SECONDS = 5;
 
 const WatchPingIndicator = GObject.registerClass(
@@ -67,6 +66,10 @@ export default class WatchPingExtension extends Extension {
 
         const host = this._getHost();
         const intervalSeconds = this._getIntervalSeconds();
+        if (!this._isValidIpAddress(host)) {
+            this._indicator.setText('?');
+            return;
+        }
 
         const cancellable = new Gio.Cancellable();
         let process;
@@ -199,9 +202,13 @@ export default class WatchPingExtension extends Extension {
             error.matches(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED);
     }
 
+    _isValidIpAddress(host) {
+        return GLib.hostname_is_ip_address(host);
+    }
+
     _getHost() {
         const host = this._settings?.get_string('host') ?? '';
-        return host.trim() || DEFAULT_HOST;
+        return host.trim();
     }
 
     _getIntervalSeconds() {

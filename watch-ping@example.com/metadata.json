@@ -1,0 +1,7 @@
+{
+  "uuid": "watch-ping@example.com",
+  "name": "Hello World",
+  "description": "Sample extension that shows Hello world in the top bar",
+  "version": 1,
+  "shell-version": ["45", "46", "47", "48", "49"]
+}

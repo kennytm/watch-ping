@@ -22,3 +22,10 @@ cp -r watch-ping@example.com ~/.local/share/gnome-shell/extensions/
 ./scripts/build-extension.sh
 gnome-extensions install ./dist/watch-ping@example.com.v1.shell-extension.zip
 ```
+
+## Testing
+
+```bash
+gnome-extensions install --force ./dist/watch-ping@example.com.v1.shell-extension.zip
+dbus-run-session gnome-shell --devkit --wayland
+```

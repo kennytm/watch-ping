@@ -2,6 +2,8 @@
 
 GNOME Shell extension that displays network latency in the top bar.
 
+Supports GNOME Shell 49, 50, and 51.
+
 ## Description
 
 This extension periodically pings a configured host and updates the label with
@@ -14,13 +16,13 @@ the extension preferences.
 
 ```bash
 ./scripts/build-extension.sh
-gnome-extensions install ./dist/watch-ping@example.com.v1.shell-extension.zip
+gnome-extensions install ./dist/watch-ping@example.com.v2.shell-extension.zip
 ```
 
 You can test the extension without logging out via a nested shell.
 
 ```bash
 ./scripts/build-extension.sh
-gnome-extensions install --force ./dist/watch-ping@example.com.v1.shell-extension.zip
+gnome-extensions install --force ./dist/watch-ping@example.com.v2.shell-extension.zip
 dbus-run-session gnome-shell --devkit --wayland
 ```
